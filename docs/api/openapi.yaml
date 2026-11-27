@@ -1,0 +1,916 @@
+openapi: 3.1.0
+info:
+  title: Matchday API
+  version: 0.1.0
+  description: |
+    REST API for managing amateur football leagues: seasons, fixtures,
+    squads, availability, match reports, standings and season simulations.
+
+    Conventions:
+    - All paths are prefixed with /api/v1.
+    - Errors use RFC 9457 Problem Details (application/problem+json).
+    - Lists are paginated with `limit` and `offset`.
+    - `x-required-roles` lists the roles allowed to call an operation.
+      Operations without it are public.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+  - name: Seasons
+  - name: Matches
+  - name: Squads
+  - name: Availability
+  - name: Statistics
+  - name: Simulations
+  - name: Users
+
+paths:
+  # ---------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive a JWT
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- Seasons
+  /leagues/{leagueId}/seasons:
+    post:
+      tags: [Seasons]
+      summary: Create a season in a league (A1)
+      operationId: createSeason
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/LeagueId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeasonCreate'
+      responses:
+        '201':
+          description: Season created
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Season'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /seasons/{seasonId}/teams/{teamId}:
+    put:
+      tags: [Seasons]
+      summary: Add a team to a season (A1)
+      description: Idempotent. Adding a team that is already in the season has no effect.
+      operationId: addTeamToSeason
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+        - $ref: '#/components/parameters/TeamId'
+      responses:
+        '204':
+          description: Team is part of the season
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /seasons/{seasonId}/fixtures:
+    post:
+      tags: [Seasons]
+      summary: Generate all fixtures for a season (A1)
+      description: |
+        Generates a double round-robin schedule (every team plays every other
+        team home and away). Fails with 409 if fixtures already exist.
+      operationId: generateFixtures
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FixtureGenerationRequest'
+      responses:
+        '201':
+          description: Fixtures generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /seasons/{seasonId}/matches:
+    get:
+      tags: [Matches]
+      summary: List fixtures and results of a season (G2)
+      operationId: listSeasonMatches
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+        - name: matchday
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/MatchStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Matches of the season
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchPage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /seasons/{seasonId}/standings:
+    get:
+      tags: [Statistics]
+      summary: Current league table (G1)
+      description: |
+        Computed from finished matches. Sorted by points, goal difference,
+        goals scored, then head-to-head result.
+      operationId: getStandings
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      responses:
+        '200':
+          description: League table
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StandingRow'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /seasons/{seasonId}/top-scorers:
+    get:
+      tags: [Statistics]
+      summary: Top scorers of a season (G3)
+      operationId: getTopScorers
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        '200':
+          description: Top scorers, highest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TopScorer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /seasons/{seasonId}/simulations:
+    post:
+      tags: [Simulations]
+      summary: Start a Monte Carlo simulation of the remaining season (G4)
+      operationId: startSimulation
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulationRequest'
+      responses:
+        '201':
+          description: Simulation finished and stored
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+
+  /seasons/{seasonId}/simulations/latest:
+    get:
+      tags: [Simulations]
+      summary: Latest simulation results (G4)
+      operationId: getLatestSimulation
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      responses:
+        '200':
+          description: Most recent simulation run with per-team probabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRun'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------------------------------------------------------------- Matches
+  /matches/{matchId}/referee:
+    put:
+      tags: [Matches]
+      summary: Assign or replace the referee of a match (A2)
+      operationId: assignReferee
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefereeAssignment'
+      responses:
+        '200':
+          description: Referee assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Referee already has a match at the same time (K6)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: User does not have the REFEREE role
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /matches/{matchId}/report:
+    post:
+      tags: [Matches]
+      summary: Submit the match report (R1)
+      description: |
+        Only the assigned referee may submit. Sets the final score, records
+        goals and cards, and sets the match status to FINISHED. The report is
+        locked afterwards.
+      operationId: submitMatchReport
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [REFEREE]
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchReport'
+      responses:
+        '201':
+          description: Report accepted, match finished
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is not the assigned referee
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Report already submitted (K7)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: An event references a player not in either squad (K8)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /me/matches:
+    get:
+      tags: [Matches]
+      summary: Matches assigned to the logged-in referee (R2)
+      operationId: listMyRefereeMatches
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [REFEREE]
+      parameters:
+        - $ref: '#/components/parameters/MatchStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Assigned matches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /teams/{teamId}/matches:
+    get:
+      tags: [Matches]
+      summary: Matches of a team (P2)
+      operationId: listTeamMatches
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+        - $ref: '#/components/parameters/MatchStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Matches of the team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchPage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------------------------------------------------------------- Squads
+  /teams/{teamId}/squad:
+    post:
+      tags: [Squads]
+      summary: Add a player to the team's squad for a season (C2)
+      operationId: addSquadMember
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [COACH, ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SquadMembershipCreate'
+      responses:
+        '201':
+          description: Player added to the squad
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SquadMembership'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is not a coach of this team
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Player already in a squad this season (K5) or shirt number taken (K11)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  # ---------------------------------------------------------------- Availability
+  /matches/{matchId}/availability:
+    get:
+      tags: [Availability]
+      summary: Availability of all squad players for a match (C1)
+      operationId: getMatchAvailability
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [COACH, ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+        - name: teamId
+          in: query
+          required: true
+          description: Which of the two teams to show
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: One entry per squad player, including players without a response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailabilityEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matches/{matchId}/availability/me:
+    put:
+      tags: [Availability]
+      summary: Set my availability for a match (P1)
+      description: |
+        The player is taken from the JWT, never from the request body.
+        Idempotent. Only allowed before kickoff (K9).
+      operationId: setMyAvailability
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [PLAYER]
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailabilityUpdate'
+      responses:
+        '200':
+          description: Availability saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Player is not in the squad of either team
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Kickoff has already passed (K9)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  # ---------------------------------------------------------------- Users
+  /users/{userId}/roles/{role}:
+    put:
+      tags: [Users]
+      summary: Grant a role to a user (A4)
+      description: Idempotent.
+      operationId: grantRole
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Role'
+      responses:
+        '204':
+          description: User has the role
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Users]
+      summary: Revoke a role from a user (A4)
+      operationId: revokeRole
+      security: [{ bearerAuth: [] }]
+      x-required-roles: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Role'
+      responses:
+        '204':
+          description: Role removed (or user did not have it)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  headers:
+    Location:
+      description: URL of the created resource
+      schema:
+        type: string
+        format: uri-reference
+
+  parameters:
+    LeagueId:
+      name: leagueId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    SeasonId:
+      name: seasonId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    Role:
+      name: role
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Role'
+    MatchStatusFilter:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/MatchStatus'
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    BadRequest:
+      description: Malformed request (invalid JSON, missing or wrongly typed field)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing or invalid token / wrong credentials
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Authenticated, but not allowed to perform this action
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: Request conflicts with the current state of the resource
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unprocessable:
+      description: Request is well-formed but violates a business rule
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    # ------------------------------------------------ Common
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details
+      required: [type, title, status]
+      properties:
+        type:   { type: string, format: uri, example: 'https://matchday.dev/errors/report-locked' }
+        title:  { type: string, example: Match report already submitted }
+        status: { type: integer, example: 409 }
+        detail: { type: string, example: Match 12 is finished and can only be corrected by an admin. }
+        instance: { type: string, example: /api/v1/matches/12/report }
+
+    PageMeta:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit:  { type: integer }
+        offset: { type: integer }
+        total:  { type: integer }
+
+    Role:
+      type: string
+      enum: [ADMIN, COACH, PLAYER, REFEREE]
+
+    MatchStatus:
+      type: string
+      enum: [SCHEDULED, FINISHED, ABANDONED]
+
+    TeamRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:   { type: integer, format: int64 }
+        name: { type: string, example: Weimarer SV II }
+
+    PlayerRef:
+      type: object
+      required: [id, firstName, lastName]
+      properties:
+        id:        { type: integer, format: int64 }
+        firstName: { type: string }
+        lastName:  { type: string }
+
+    # ------------------------------------------------ Auth
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:    { type: string, format: email }
+        password: { type: string, format: password, minLength: 8 }
+
+    TokenResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken: { type: string }
+        tokenType:   { type: string, const: Bearer }
+        expiresIn:   { type: integer, description: Seconds until expiry, example: 3600 }
+
+    # ------------------------------------------------ Seasons
+    SeasonCreate:
+      type: object
+      required: [name, startDate, endDate]
+      properties:
+        name:            { type: string, example: 2026/27 }
+        startDate:       { type: string, format: date }
+        endDate:         { type: string, format: date }
+        relegationSpots: { type: integer, minimum: 0, default: 2 }
+
+    Season:
+      allOf:
+        - $ref: '#/components/schemas/SeasonCreate'
+        - type: object
+          required: [id, leagueId, status]
+          properties:
+            id:       { type: integer, format: int64 }
+            leagueId: { type: integer, format: int64 }
+            status:
+              type: string
+              enum: [PLANNED, RUNNING, FINISHED]
+
+    FixtureGenerationRequest:
+      type: object
+      required: [firstKickoff, daysBetweenMatchdays]
+      properties:
+        firstKickoff:
+          type: string
+          format: date-time
+          description: Kickoff of matchday 1
+        daysBetweenMatchdays: { type: integer, minimum: 1, default: 7 }
+
+    # ------------------------------------------------ Matches
+    Match:
+      type: object
+      required: [id, seasonId, matchday, homeTeam, awayTeam, kickoffAt, status]
+      properties:
+        id:        { type: integer, format: int64 }
+        seasonId:  { type: integer, format: int64 }
+        matchday:  { type: integer, minimum: 1 }
+        homeTeam:  { $ref: '#/components/schemas/TeamRef' }
+        awayTeam:  { $ref: '#/components/schemas/TeamRef' }
+        kickoffAt: { type: string, format: date-time }
+        venue:     { type: [string, 'null'] }
+        status:    { $ref: '#/components/schemas/MatchStatus' }
+        refereeUserId: { type: [integer, 'null'], format: int64 }
+        homeGoals: { type: [integer, 'null'], minimum: 0 }
+        awayGoals: { type: [integer, 'null'], minimum: 0 }
+
+    MatchPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Match'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    RefereeAssignment:
+      type: object
+      required: [userId]
+      properties:
+        userId: { type: integer, format: int64 }
+
+    MatchEventInput:
+      type: object
+      required: [type, playerId, teamId, minute]
+      properties:
+        type:
+          type: string
+          enum: [GOAL, OWN_GOAL, YELLOW, RED]
+        playerId: { type: integer, format: int64 }
+        teamId:
+          type: integer
+          format: int64
+          description: The team the player played for in this match
+        minute: { type: integer, minimum: 1, maximum: 130 }
+
+    MatchReport:
+      type: object
+      required: [homeGoals, awayGoals, events]
+      properties:
+        homeGoals: { type: integer, minimum: 0 }
+        awayGoals: { type: integer, minimum: 0 }
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchEventInput'
+
+    # ------------------------------------------------ Squads
+    SquadMembershipCreate:
+      type: object
+      required: [playerId, seasonId]
+      properties:
+        playerId:    { type: integer, format: int64 }
+        seasonId:    { type: integer, format: int64 }
+        shirtNumber: { type: [integer, 'null'], minimum: 1, maximum: 99 }
+
+    SquadMembership:
+      allOf:
+        - $ref: '#/components/schemas/SquadMembershipCreate'
+        - type: object
+          required: [id, teamId]
+          properties:
+            id:     { type: integer, format: int64 }
+            teamId: { type: integer, format: int64 }
+
+    # ------------------------------------------------ Availability
+    AvailabilityStatus:
+      type: string
+      enum: [AVAILABLE, UNAVAILABLE, NO_RESPONSE]
+
+    AvailabilityUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [AVAILABLE, UNAVAILABLE]
+        reason: { type: [string, 'null'], maxLength: 200, example: work }
+
+    AvailabilityEntry:
+      type: object
+      required: [player, status]
+      properties:
+        player:    { $ref: '#/components/schemas/PlayerRef' }
+        status:    { $ref: '#/components/schemas/AvailabilityStatus' }
+        reason:    { type: [string, 'null'] }
+        updatedAt: { type: [string, 'null'], format: date-time }
+
+    # ------------------------------------------------ Statistics
+    StandingRow:
+      type: object
+      required: [position, team, played, won, drawn, lost, goalsFor, goalsAgainst, goalDifference, points]
+      properties:
+        position:       { type: integer }
+        team:           { $ref: '#/components/schemas/TeamRef' }
+        played:         { type: integer }
+        won:            { type: integer }
+        drawn:          { type: integer }
+        lost:           { type: integer }
+        goalsFor:       { type: integer }
+        goalsAgainst:   { type: integer }
+        goalDifference: { type: integer }
+        points:         { type: integer }
+
+    TopScorer:
+      type: object
+      required: [rank, player, team, goals]
+      properties:
+        rank:   { type: integer }
+        player: { $ref: '#/components/schemas/PlayerRef' }
+        team:   { $ref: '#/components/schemas/TeamRef' }
+        goals:  { type: integer }
+
+    # ------------------------------------------------ Simulations
+    SimulationRequest:
+      type: object
+      properties:
+        iterations:
+          type: integer
+          minimum: 1000
+          maximum: 1000000
+          default: 100000
+        seed:
+          type: [integer, 'null']
+          description: Optional random seed for reproducible results
+
+    SimulationResult:
+      type: object
+      required: [team, pTitle, pRelegation, expectedPoints, positionProbabilities]
+      properties:
+        team:           { $ref: '#/components/schemas/TeamRef' }
+        pTitle:         { type: number, minimum: 0, maximum: 1 }
+        pRelegation:    { type: number, minimum: 0, maximum: 1 }
+        expectedPoints: { type: number }
+        positionProbabilities:
+          type: array
+          description: Index 0 = probability of finishing 1st, index 1 = 2nd, ...
+          items: { type: number, minimum: 0, maximum: 1 }
+
+    SimulationRun:
+      type: object
+      required: [id, seasonId, iterations, createdAt, durationMs, results]
+      properties:
+        id:         { type: integer, format: int64 }
+        seasonId:   { type: integer, format: int64 }
+        iterations: { type: integer }
+        createdAt:  { type: string, format: date-time }
+        durationMs: { type: integer }
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationResult'
